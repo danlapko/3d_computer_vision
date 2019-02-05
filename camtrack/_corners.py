@@ -1,3 +1,4 @@
+
 __all__ = [
     'FrameCorners',
     'filter_frame_corners',
@@ -230,6 +231,7 @@ def create_cli(build):
             corner_storage = build(sequence)
         if file_to_dump is not None:
             dump(corner_storage, file_to_dump)
+
         if show:
             click.echo(
                 "Press 'q' to stop, 'd' to go forward, 'a' to go backward"
