@@ -1,4 +1,5 @@
 #! /usr/bin/env python3
+import glm
 
 __all__ = [
     'CameraTrackRenderer'
@@ -26,10 +27,17 @@ def createP(fov_y, aspect_ratio, near, far):
     return P
 
 
+def rotate_R(A):
+    return A @ np.array([[1, 0, 0],
+                         [0, -1, 0],
+                         [0, 0, -1]])
+
+
 def createM(R, t):
     M = np.eye(4, dtype=np.float32)
     M[:3, :3] = R
     M[:3, 3] = t
+    M = M
     return M
 
 
@@ -91,13 +99,18 @@ class CameraTrackRenderer:
         for building tracked camera frustrum
         :param point_cloud: colored point cloud
         """
+        R_transform = np.array([[1, 0, 0],
+                                [0, -1, 0],
+                                [0, 0, -1]])
+
         self.tracked_cam_ts = np.array([pos.t_vec * [1, -1, -1] for pos in tracked_cam_track], dtype=np.float32)
-        self.tracked_cam_Rs = np.array([pos.r_mat.T for pos in tracked_cam_track], dtype=np.float32)
+        self.tracked_cam_Rs = np.array(
+            [np.linalg.inv(R_transform) @ pos.r_mat @ R_transform for pos in tracked_cam_track],
+            dtype=np.float32)
         self.tracked_cam_colors = np.array([(1, 1, 1) for _ in tracked_cam_track], dtype=np.float32)
 
-        self.tracked_cam_parameters = tracked_cam_parameters
-        self.tracked_cam_track = tracked_cam_track
-        self.cloud = point_cloud
+        self.cloud_points = np.array([point * [1, -1, -1] for point in point_cloud.points], dtype=np.float32)
+        self.cloud_colors = np.array(point_cloud.colors, dtype=np.float32)
 
         self.tracked_cam_near = 1
         self.tracked_cam_far = 20
@@ -122,9 +135,8 @@ class CameraTrackRenderer:
         self.tracked_cam_point_color = np.array([[1, 0, 1]] * len(self.tracked_cam_point), dtype=np.float32)
 
         # vbos
-        self._cloud_points_vbo = vbo.VBO(
-            (point_cloud.points * np.array([[1, -1, -1]] * len(point_cloud.points))).astype(np.float32))
-        self._cloud_colors_vbo = vbo.VBO(point_cloud.colors.astype(np.float32))
+        self._cloud_points_vbo = vbo.VBO(self.cloud_points)
+        self._cloud_colors_vbo = vbo.VBO(self.cloud_colors)
 
         self._tracked_cam_ts_vbo = vbo.VBO(self.tracked_cam_ts)
         self._tracked_cam_colors_vbo = vbo.VBO(self.tracked_cam_colors)
@@ -165,6 +177,7 @@ class CameraTrackRenderer:
         w = GLUT.glutGet(GLUT.GLUT_SCREEN_WIDTH)
         aspect_ratio = w / h
 
+        # camera_tr_vec = (camera_tr_vec * [1, -1, -1]).astype(np.float32)
         M = np.eye(4, dtype=np.float32)
         V = createV(camera_rot_mat, camera_tr_vec)
         P = createP(camera_fov_y, aspect_ratio, self.render_cam_near, self.render_cam_far)
@@ -204,7 +217,7 @@ class CameraTrackRenderer:
                                  self._cloud_colors_vbo)
         self._cloud_colors_vbo.unbind()
 
-        GL.glDrawArrays(GL.GL_POINTS, 0, len(self.cloud.ids))
+        GL.glDrawArrays(GL.GL_POINTS, 0, len(self.cloud_points))
 
         # render tracked_cameras track ===============================================================
         self._tracked_cam_ts_vbo.bind()
@@ -219,7 +232,7 @@ class CameraTrackRenderer:
                                  self._tracked_cam_colors_vbo)
         self._tracked_cam_colors_vbo.unbind()
 
-        GL.glDrawArrays(GL.GL_LINE_STRIP, 0, len(self.tracked_cam_track))
+        GL.glDrawArrays(GL.GL_LINE_STRIP, 0, len(self.tracked_cam_ts))
 
         # render tracked cam frustrum ===============================================================
         GL.glUniformMatrix4fv(
