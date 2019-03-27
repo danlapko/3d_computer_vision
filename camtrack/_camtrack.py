@@ -16,7 +16,9 @@ __all__ = [
     'to_opencv_camera_mat3x3',
     'triangulate_correspondences',
     'view_mat3x4_to_pose',
-    'pose_to_view_mat3x4'
+    'pose_to_view_mat3x4',
+    'to_homogeneous',
+    'remove_correspondences_with_ids'
 ]
 
 from collections import namedtuple
@@ -69,12 +71,12 @@ def pose_to_view_mat3x4(pose: Pose) -> np.ndarray:
     ))
 
 
-def _to_homogeneous(points):
+def to_homogeneous(points):
     return np.pad(points, ((0, 0), (0, 1)), 'constant', constant_values=(1,))
 
 
 def project_points(points3d: np.ndarray, proj_mat: np.ndarray) -> np.ndarray:
-    points3d = _to_homogeneous(points3d)
+    points3d = to_homogeneous(points3d)
     points2d = np.dot(proj_mat, points3d.T)
     points2d /= points2d[[2]]
     return points2d[:2].T
@@ -108,15 +110,16 @@ def _calc_triangulation_angle_mask(view_mat_1: np.ndarray,
     vecs_1 = normalize(camera_center_1 - points3d)
     vecs_2 = normalize(camera_center_2 - points3d)
     coss = np.einsum('ij,ij->i', vecs_1, vecs_2)
-    angles_mask = coss <= np.cos(np.deg2rad(min_angle_deg))
+    # coss_ = (vecs_1 * vecs_2).sum(1)  # суммируем поэлементное произведение по строкам
+    # assert np.array_equal(coss, coss_), (np.abs(coss-coss_).max())
+    angles_mask = coss <= np.cos(np.deg2rad(min_angle_deg))  # т.е угол больше чем min_angle
     return angles_mask
 
 
-Correspondences = namedtuple(
+Correspondences = namedtuple(  # соответствия
     'Correspondences',
     ('ids', 'points_1', 'points_2')
 )
-
 
 TriangulationParameters = namedtuple(
     'TriangulationParameters',
@@ -124,8 +127,8 @@ TriangulationParameters = namedtuple(
 )
 
 
-def _remove_correspondences_with_ids(correspondences: Correspondences,
-                                     ids_to_remove: np.ndarray) \
+def remove_correspondences_with_ids(correspondences: Correspondences,
+                                    ids_to_remove: np.ndarray) \
         -> Correspondences:
     ids = correspondences.ids.flatten()
     ids_to_remove = ids_to_remove.flatten()
@@ -150,12 +153,12 @@ def build_correspondences(corners_1: FrameCorners, corners_2: FrameCorners,
         corners_2.points[indices_2]
     )
     if ids_to_remove is not None:
-        corrs = _remove_correspondences_with_ids(corrs, ids_to_remove)
+        corrs = remove_correspondences_with_ids(corrs, ids_to_remove)
     return corrs
 
 
 def _calc_z_mask(points3d, view_mat, min_depth):
-    points3d = _to_homogeneous(points3d)
+    points3d = to_homogeneous(points3d)
     points3d_in_camera_space = np.dot(view_mat, points3d.T)
     return points3d_in_camera_space[2].flatten() >= min_depth
 
@@ -245,7 +248,6 @@ def rodrigues_and_translation_to_view_mat3x4(r_vec: np.ndarray,
 
 
 class PointCloudBuilder:
-
     __slots__ = ('_ids', '_points', '_colors')
 
     def __init__(self, ids: np.ndarray = None, points: np.ndarray = None,
@@ -282,6 +284,12 @@ class PointCloudBuilder:
         self._ids = np.vstack((self.ids, np.delete(ids, idx_2, axis=0)))
         self._points = np.vstack((self.points, np.delete(points, idx_2, axis=0)))
         self._sort_data()
+
+    def get_points_by_ids(self, ids):
+        _, (idxs_in_self_ids, idxs_in_ids) = snp.intersect(self.ids.flatten(), ids.flatten(),
+                                          indices=True)
+
+        return self.points[idxs_in_self_ids], idxs_in_ids
 
     def set_colors(self, colors: np.ndarray) -> None:
         assert self._ids.size == colors.shape[0]
@@ -368,11 +376,11 @@ def calc_point_cloud_colors(pc_builder: PointCloudBuilder,
                 errors = np.nan_to_num(errors)
 
             consistency_mask = (
-                (errors <= max_reproj_error) &
-                (corners.points[:, 0] >= 0) &
-                (corners.points[:, 1] >= 0) &
-                (corners.points[:, 0] < image.shape[1] - 0.5) &
-                (corners.points[:, 1] < image.shape[0] - 0.5)).flatten()
+                    (errors <= max_reproj_error) &
+                    (corners.points[:, 0] >= 0) &
+                    (corners.points[:, 1] >= 0) &
+                    (corners.points[:, 0] < image.shape[1] - 0.5) &
+                    (corners.points[:, 1] < image.shape[0] - 0.5)).flatten()
             ids_to_process = corners.ids[consistency_mask].flatten()
             corner_points = np.round(
                 corners.points[consistency_mask]
@@ -443,4 +451,5 @@ def create_cli(track_and_calc_colors):
                     frame += 1
                 if key == 'q':
                     break
+
     return cli

@@ -20,6 +20,7 @@ from _corners import FrameCorners, CornerStorage, StorageImpl
 from _corners import dump, load, draw, without_short_tracks, create_cli
 from itertools import count
 from scipy import spatial
+from params import *
 
 
 class _CornerStorageBuilder:
@@ -37,25 +38,11 @@ class _CornerStorageBuilder:
         return StorageImpl(item[1] for item in sorted(self._corners.items()))
 
 
-def _build_impl(frame_sequence: pims.FramesSequence,
-                builder: _CornerStorageBuilder) -> None:
-    image_0 = frame_sequence[0]
-
-    corners = find_corners(image_0, min_dist=8)
-    max_corn_id = corners.ids.max()
-
-    builder.set_corners_at_frame(0, corners)
-    for i_frame, image_1 in enumerate(frame_sequence[1:], 1):
-        corners, max_corn_id = flow_corners(image_0, image_1, corners, max_corn_id, min_dist=8, max_new_corns=50)
-        builder.set_corners_at_frame(i_frame, corners)
-        image_0 = image_1
-
-
 def find_corners(image_0, min_dist, q=0.03):
     # params for ShiTomasi corner detection
     image_0 = (image_0 * 255).astype(np.uint8)
 
-    feature_params = dict(maxCorners=2000,
+    feature_params = dict(maxCorners=init_max_corners,
                           qualityLevel=q,
                           minDistance=min_dist)  # block_size - window for derivative calculation
     corns = cv2.goodFeaturesToTrack(image_0, mask=None, **feature_params)
@@ -69,12 +56,13 @@ def find_corners(image_0, min_dist, q=0.03):
     return corners
 
 
-def flow_corners(image_0, image_1, corners_0, max_corn_id, min_dist, max_new_corns):
+def flow_corners(image_0, image_1, corners_0, max_corn_id, min_dist, max_new_corns, q):
     # Parameters for lucas kanade optical flow
-    lk_params = dict(winSize=(25, 25),  # winSize - size of the search window at each pyramid level.
-                     maxLevel=0,  # 0-based maximal pyramid level number; if set to 0, pyramids are not used
-                     criteria=(cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 10, 0.001),
-                     minEigThreshold=1e-4)
+    lk_params = dict(winSize=lk_win_size,
+                     maxLevel=lk_maxLevel,
+                     criteria=(cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT,
+                               lk_iterative_search_stop_n_iter, lk_iterative_search_stop_epsilon),
+                     minEigThreshold=lk_min_eig_threshold)
 
     # calculate optical flow
     points_0 = corners_0.points.reshape((-1, 1, 2))
@@ -88,7 +76,7 @@ def flow_corners(image_0, image_1, corners_0, max_corn_id, min_dist, max_new_cor
     points = np.squeeze(corns[statuses])
     sizes = corners_0.sizes[statuses]
 
-    new_corners = find_corners(image_1, min_dist, q=0.05)
+    new_corners = find_corners(image_1, min_dist, q=q)
     new_points = new_corners.points
     pointsKDTree = spatial.KDTree(points)
 
@@ -119,6 +107,23 @@ def flow_corners(image_0, image_1, corners_0, max_corn_id, min_dist, max_new_cor
     # print(f" NEXT: prev {corners_0.ids.shape}, next {corners.ids.shape} ")
 
     return corners, max_corn_id
+
+
+def _build_impl(frame_sequence: pims.FramesSequence,
+                builder: _CornerStorageBuilder) -> None:
+    image_0 = frame_sequence[0]
+
+    corners = find_corners(image_0, min_dist=init_min_dist_btw_corners, q=init_min_quality_of_corners)
+    max_corn_id = corners.ids.max()
+
+    builder.set_corners_at_frame(0, corners)
+    for i_frame, image_1 in enumerate(frame_sequence[1:], 1):
+        corners, max_corn_id = flow_corners(image_0, image_1, corners, max_corn_id,
+                                            min_dist=update_min_dist_btw_corners,
+                                            max_new_corns=update_max_new_corners,
+                                            q=update_min_quality_of_corners)
+        builder.set_corners_at_frame(i_frame, corners)
+        image_0 = image_1
 
 
 def build(frame_sequence: pims.FramesSequence,
