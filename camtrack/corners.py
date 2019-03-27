@@ -1,4 +1,5 @@
 #! /usr/bin/env python3
+from scipy.spatial.distance import squareform, pdist
 
 __all__ = [
     'FrameCorners',
@@ -17,6 +18,8 @@ import pims
 
 from _corners import FrameCorners, CornerStorage, StorageImpl
 from _corners import dump, load, draw, without_short_tracks, create_cli
+from itertools import count
+from scipy import spatial
 
 
 class _CornerStorageBuilder:
@@ -37,15 +40,85 @@ class _CornerStorageBuilder:
 def _build_impl(frame_sequence: pims.FramesSequence,
                 builder: _CornerStorageBuilder) -> None:
     image_0 = frame_sequence[0]
-    corners = FrameCorners(
-        np.array([0]),
-        np.array([[0, 0]]),
-        np.array([55])
-    )
+
+    corners = find_corners(image_0, min_dist=8)
+    max_corn_id = corners.ids.max()
+
     builder.set_corners_at_frame(0, corners)
-    for frame, image_1 in enumerate(frame_sequence[1:], 1):
-        builder.set_corners_at_frame(frame, corners)
+    for i_frame, image_1 in enumerate(frame_sequence[1:], 1):
+        corners, max_corn_id = flow_corners(image_0, image_1, corners, max_corn_id, min_dist=8, max_new_corns=50)
+        builder.set_corners_at_frame(i_frame, corners)
         image_0 = image_1
+
+
+def find_corners(image_0, min_dist, q=0.03):
+    # params for ShiTomasi corner detection
+    image_0 = (image_0 * 255).astype(np.uint8)
+
+    feature_params = dict(maxCorners=2000,
+                          qualityLevel=q,
+                          minDistance=min_dist)  # block_size - window for derivative calculation
+    corns = cv2.goodFeaturesToTrack(image_0, mask=None, **feature_params)
+    # print("\nINITIAL CORNS", corns.shape)
+
+    corners = FrameCorners(
+        np.arange(corns.shape[0]),
+        np.squeeze(corns),
+        np.array([5] * corns.shape[0])
+    )
+    return corners
+
+
+def flow_corners(image_0, image_1, corners_0, max_corn_id, min_dist, max_new_corns):
+    # Parameters for lucas kanade optical flow
+    lk_params = dict(winSize=(25, 25),  # winSize - size of the search window at each pyramid level.
+                     maxLevel=0,  # 0-based maximal pyramid level number; if set to 0, pyramids are not used
+                     criteria=(cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 10, 0.001),
+                     minEigThreshold=1e-4)
+
+    # calculate optical flow
+    points_0 = corners_0.points.reshape((-1, 1, 2))
+    image_0 = (image_0 * 255).astype(np.uint8)
+    image_1 = (image_1 * 255).astype(np.uint8)
+
+    corns, statuses, _ = cv2.calcOpticalFlowPyrLK(image_0, image_1, points_0, None, **lk_params)
+    statuses = np.squeeze(statuses) == 1
+
+    ids = corners_0.ids[statuses]
+    points = np.squeeze(corns[statuses])
+    sizes = corners_0.sizes[statuses]
+
+    new_corners = find_corners(image_1, min_dist, q=0.05)
+    new_points = new_corners.points
+    pointsKDTree = spatial.KDTree(points)
+
+    distances, _ = pointsKDTree.query(new_points)  # nearest points
+    args_dists = np.argsort(distances)
+    new_indxs = distances > min_dist
+    new_indxs[args_dists[:-max_new_corns]] = False
+
+    new_points = new_points[new_indxs]
+    new_ids = np.arange(max_corn_id + 1, max_corn_id + 1 + new_points.shape[0]).reshape(-1, 1)
+    new_sizes = new_corners.sizes[new_indxs] * 2
+
+    # print(" SHAPES:", ids.shape, points.shape, sizes.shape, new_ids.shape, new_points.shape, new_sizes.shape)
+
+    ids = np.concatenate((ids, new_ids), axis=0)
+    points = np.concatenate((points, new_points), axis=0)
+    sizes = np.concatenate((sizes, new_sizes), axis=0)
+
+    max_corn_id += new_points.shape[0]
+
+    corners = FrameCorners(
+        ids,
+        points,
+        sizes
+    )
+
+    distances.sort()
+    # print(f" NEXT: prev {corners_0.ids.shape}, next {corners.ids.shape} ")
+
+    return corners, max_corn_id
 
 
 def build(frame_sequence: pims.FramesSequence,
