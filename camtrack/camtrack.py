@@ -55,8 +55,8 @@ def find_Pose_by_2_frames(corners1, corners2, intrin_mat, triangl_params):
                                                  cameraMatrix=intrin_mat, method=cv2.RANSAC,
                                                  prob=essen_ransacConfidence,
                                                  threshold=essen_threshold)
-    if not check_inliers_mask(essen_inliers_mask, essen_min_inlier_count, essen_min_inlier_ratio):
-        print(f' inliers 0/{len(corners2.ids)} (refused by check_inliers_mask)')
+    if E.shape != (3, 3):
+        print(f' inliers 0/{len(corners2.ids)} (refused by check E shape)')
         return None, [], []
 
     essen_n_inliers = np.count_nonzero(essen_inliers_mask)
